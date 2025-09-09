@@ -130,7 +130,7 @@ func generateCompletionsContent(ctx context.Context, o *LLM, messages []llms.Mes
 }
 
 func generateMessagesContent(ctx context.Context, o *LLM, messages []llms.MessageContent, opts *llms.CallOptions) (*llms.ContentResponse, error) {
-	chatMessages, systemPrompt, err := processMessages(messages)
+	chatMessages, systemContents, err := processMessages(messages)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: failed to process messages: %w", err)
 	}
@@ -139,7 +139,7 @@ func generateMessagesContent(ctx context.Context, o *LLM, messages []llms.Messag
 	result, err := o.client.CreateMessage(ctx, &anthropicclient.MessageRequest{
 		Model:         opts.Model,
 		Messages:      chatMessages,
-		System:        systemPrompt,
+		System:        systemContents,
 		MaxTokens:     opts.MaxTokens,
 		StopWords:     opts.StopWords,
 		Temperature:   opts.Temperature,
@@ -221,82 +221,106 @@ func toolsToTools(tools []llms.Tool) []anthropicclient.Tool {
 	return toolReq
 }
 
-func processMessages(messages []llms.MessageContent) ([]anthropicclient.ChatMessage, string, error) {
+func processMessages(messages []llms.MessageContent) ([]anthropicclient.ChatMessage, []anthropicclient.SystemContent, error) {
 	chatMessages := make([]anthropicclient.ChatMessage, 0, len(messages))
-	systemPrompt := ""
+	systemContents := make([]anthropicclient.SystemContent, 0)
 	for _, msg := range messages {
 		switch msg.Role {
 		case llms.ChatMessageTypeSystem:
-			content, err := handleSystemMessage(msg)
+			systemContent, err := handleSystemMessage(msg)
 			if err != nil {
-				return nil, "", fmt.Errorf("anthropic: failed to handle system message: %w", err)
+				return nil, nil, fmt.Errorf("anthropic: failed to handle system message: %w", err)
 			}
-			systemPrompt += content
+			systemContents = append(systemContents, systemContent...)
 		case llms.ChatMessageTypeHuman:
 			chatMessage, err := handleHumanMessage(msg)
 			if err != nil {
-				return nil, "", fmt.Errorf("anthropic: failed to handle human message: %w", err)
+				return nil, nil, fmt.Errorf("anthropic: failed to handle human message: %w", err)
 			}
 			chatMessages = append(chatMessages, chatMessage)
 		case llms.ChatMessageTypeAI:
 			chatMessage, err := handleAIMessage(msg)
 			if err != nil {
-				return nil, "", fmt.Errorf("anthropic: failed to handle AI message: %w", err)
+				return nil, nil, fmt.Errorf("anthropic: failed to handle AI message: %w", err)
 			}
 			chatMessages = append(chatMessages, chatMessage)
 		case llms.ChatMessageTypeTool:
 			chatMessage, err := handleToolMessage(msg)
 			if err != nil {
-				return nil, "", fmt.Errorf("anthropic: failed to handle tool message: %w", err)
+				return nil, nil, fmt.Errorf("anthropic: failed to handle tool message: %w", err)
 			}
 			chatMessages = append(chatMessages, chatMessage)
 		case llms.ChatMessageTypeGeneric, llms.ChatMessageTypeFunction:
-			return nil, "", fmt.Errorf("anthropic: %w: %v", ErrUnsupportedMessageType, msg.Role)
+			return nil, nil, fmt.Errorf("anthropic: %w: %v", ErrUnsupportedMessageType, msg.Role)
 		default:
-			return nil, "", fmt.Errorf("anthropic: %w: %v", ErrUnsupportedMessageType, msg.Role)
+			return nil, nil, fmt.Errorf("anthropic: %w: %v", ErrUnsupportedMessageType, msg.Role)
 		}
 	}
-	return chatMessages, systemPrompt, nil
+	return chatMessages, systemContents, nil
 }
 
-func handleSystemMessage(msg llms.MessageContent) (string, error) {
-	if textContent, ok := msg.Parts[0].(llms.TextContent); ok {
-		return textContent.Text, nil
+func handleSystemMessage(msg llms.MessageContent) ([]anthropicclient.SystemContent, error) {
+	systemContents := make([]anthropicclient.SystemContent, 0, len(msg.Parts))
+	
+	for _, part := range msg.Parts {
+		if textContent, ok := part.(llms.TextContent); ok {
+			systemContent := anthropicclient.SystemContent{
+				Type: "text",
+				Text: textContent.Text,
+				// Add cache_control with ephemeral type for system messages
+				CacheControl: &anthropicclient.CacheControl{
+					Type: "ephemeral",
+				},
+			}
+			systemContents = append(systemContents, systemContent)
+		} else {
+			return nil, fmt.Errorf("anthropic: %w for system message", ErrInvalidContentType)
+		}
 	}
-	return "", fmt.Errorf("anthropic: %w for system message", ErrInvalidContentType)
+	
+	return systemContents, nil
 }
 
 func handleHumanMessage(msg llms.MessageContent) (anthropicclient.ChatMessage, error) {
-	var contents []anthropicclient.Content
+	// Create properly formatted content blocks (not just interface{})
+	contentBlocks := make([]map[string]interface{}, 0, len(msg.Parts))
 
 	for _, part := range msg.Parts {
 		switch p := part.(type) {
 		case llms.TextContent:
-			contents = append(contents, &anthropicclient.TextContent{
-				Type: "text",
-				Text: p.Text,
-			})
-		case llms.BinaryContent:
-			contents = append(contents, &anthropicclient.ImageContent{
-				Type: "image",
-				Source: anthropicclient.ImageSource{
-					Type:      "base64",
-					MediaType: p.MIMEType,
-					Data:      base64.StdEncoding.EncodeToString(p.Data),
+			contentBlock := map[string]interface{}{
+				"type": "text",
+				"text": p.Text,
+				"cache_control": map[string]string{
+					"type": "ephemeral",
 				},
-			})
+			}
+			contentBlocks = append(contentBlocks, contentBlock)
+		case llms.BinaryContent:
+			contentBlock := map[string]interface{}{
+				"type": "image",
+				"source": map[string]interface{}{
+					"type":       "base64",
+					"media_type": p.MIMEType,
+					"data":       base64.StdEncoding.EncodeToString(p.Data),
+				},
+				"cache_control": map[string]string{
+					"type": "ephemeral",
+				},
+			}
+			contentBlocks = append(contentBlocks, contentBlock)
 		default:
 			return anthropicclient.ChatMessage{}, fmt.Errorf("anthropic: unsupported human message part type: %T", part)
 		}
 	}
 
-	if len(contents) == 0 {
+	if len(contentBlocks) == 0 {
 		return anthropicclient.ChatMessage{}, fmt.Errorf("anthropic: no valid content in human message")
 	}
 
 	return anthropicclient.ChatMessage{
 		Role:    RoleUser,
-		Content: contents,
+		Content: contentBlocks,
 	}, nil
 }
 

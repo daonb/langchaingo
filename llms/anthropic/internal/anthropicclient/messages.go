@@ -28,23 +28,42 @@ var (
 	ErrInvalidFieldType             = fmt.Errorf("invalid field type")
 )
 
+// SystemContent represents a system message content block
+type SystemContent struct {
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+}
+
+// CacheControl represents cache control settings for content
+type CacheControl struct {
+	Type string `json:"type"`
+}
+
 type ChatMessage struct {
 	Role    string      `json:"role"`
-	Content interface{} `json:"content"`
+	Content interface{} `json:"content"` // Can be string or []ContentBlock
 }
 
 type messagePayload struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	System      string        `json:"system,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	StopWords   []string      `json:"stop_sequences,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
-	Temperature float64       `json:"temperature"`
-	Tools       []Tool        `json:"tools,omitempty"`
-	TopP        float64       `json:"top_p,omitempty"`
+	Model         string           `json:"model"`
+	Messages      []ChatMessage    `json:"messages"`
+	System        []SystemContent  `json:"system,omitempty"`
+	MaxTokens     int              `json:"max_tokens,omitempty"`
+	StopWords     []string         `json:"stop_sequences,omitempty"`
+	Stream        bool             `json:"stream,omitempty"`
+	Temperature   float64          `json:"temperature"`
+	Tools         []Tool           `json:"tools,omitempty"`
+	TopP          float64          `json:"top_p,omitempty"`
+	ToolChoice    *ToolChoice      `json:"tool_choice,omitempty"`
 
 	StreamingFunc func(ctx context.Context, chunk []byte) error `json:"-"`
+}
+
+// ToolChoice represents tool choice configuration
+type ToolChoice struct {
+	Type string `json:"type"` // "auto", "any", or "tool"
+	Name string `json:"name,omitempty"` // for type "tool"
 }
 
 // Tool used for the request message payload.

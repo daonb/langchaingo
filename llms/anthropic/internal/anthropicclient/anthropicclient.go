@@ -127,22 +127,22 @@ func (c *Client) CreateCompletion(ctx context.Context, r *CompletionRequest) (*C
 }
 
 type MessageRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	System      string        `json:"system,omitempty"`
-	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	TopP        float64       `json:"top_p,omitempty"`
-	Tools       []Tool        `json:"tools,omitempty"`
-	StopWords   []string      `json:"stop_sequences,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []ChatMessage   `json:"messages"`
+	System      []SystemContent `json:"system,omitempty"`
+	Temperature float64         `json:"temperature"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	TopP        float64         `json:"top_p,omitempty"`
+	Tools       []Tool          `json:"tools,omitempty"`
+	StopWords   []string        `json:"stop_sequences,omitempty"`
+	Stream      bool            `json:"stream,omitempty"`
 
 	StreamingFunc func(ctx context.Context, chunk []byte) error `json:"-"`
 }
 
 // CreateMessage creates message for the messages api.
 func (c *Client) CreateMessage(ctx context.Context, r *MessageRequest) (*MessageResponsePayload, error) {
-	resp, err := c.createMessage(ctx, &messagePayload{
+	payload := &messagePayload{
 		Model:         r.Model,
 		Messages:      r.Messages,
 		System:        r.System,
@@ -151,9 +151,18 @@ func (c *Client) CreateMessage(ctx context.Context, r *MessageRequest) (*Message
 		StopWords:     r.StopWords,
 		TopP:          r.TopP,
 		Tools:         r.Tools,
-		Stream:        r.Stream,
+		Stream:        r.StreamingFunc != nil, // Set stream to true if streaming function provided
 		StreamingFunc: r.StreamingFunc,
-	})
+	}
+	
+	// Add tool_choice when tools are provided (as shown in the example)
+	if len(r.Tools) > 0 {
+		payload.ToolChoice = &ToolChoice{
+			Type: "auto",
+		}
+	}
+	
+	resp, err := c.createMessage(ctx, payload)
 	if err != nil {
 		return nil, err
 	}
