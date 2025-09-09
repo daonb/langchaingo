@@ -51,16 +51,26 @@ func NewOpenAIFunctionsAgent(llm llms.Model, tools []tools.Tool, opts ...Option)
 func (o *OpenAIFunctionsAgent) functions() []llms.FunctionDefinition {
 	res := make([]llms.FunctionDefinition, 0)
 	for _, tool := range o.Tools {
-		res = append(res, llms.FunctionDefinition{
-			Name:        tool.Name(),
-			Description: tool.Description(),
-			Parameters: map[string]any{
+		var parameters map[string]any
+
+		// Check if tool provides its own schema
+		if schematicTool, ok := tool.(tools.SchematicTool); ok {
+			parameters = schematicTool.GetSchema()
+		} else {
+			// Fallback to __arg1 for backward compatibility with simple tools
+			parameters = map[string]any{
 				"properties": map[string]any{
 					"__arg1": map[string]string{"title": "__arg1", "type": "string"},
 				},
 				"required": []string{"__arg1"},
 				"type":     "object",
-			},
+			}
+		}
+
+		res = append(res, llms.FunctionDefinition{
+			Name:        tool.Name(),
+			Description: tool.Description(),
+			Parameters:  parameters,
 		})
 	}
 	return res
@@ -276,13 +286,15 @@ func (o *OpenAIFunctionsAgent) ParseOutput(contentResp *llms.ContentResponse) (
 
 			toolInput := toolInputStr
 			if err == nil {
-				// Successfully parsed JSON, check for __arg1 pattern
+				// Check if this is a legacy __arg1 pattern (for backward compatibility)
 				if arg1, ok := toolInputMap["__arg1"]; ok {
+					// This is a legacy tool using __arg1, extract it
 					toolInputCheck, ok := arg1.(string)
 					if ok {
 						toolInput = toolInputCheck
 					}
 				}
+				// Otherwise, use the full toolInputStr as-is for schematic tools
 			}
 			// If JSON parsing failed, use the raw string as tool input
 			// This handles cases like calculator expressions
@@ -324,12 +336,15 @@ func (o *OpenAIFunctionsAgent) ParseOutput(contentResp *llms.ContentResponse) (
 		}
 
 		toolInput := toolInputStr
+		// Check if this is a legacy __arg1 pattern (for backward compatibility)
 		if arg1, ok := toolInputMap["__arg1"]; ok {
+			// This is a legacy tool using __arg1, extract it
 			toolInputCheck, ok := arg1.(string)
 			if ok {
 				toolInput = toolInputCheck
 			}
 		}
+		// Otherwise, use the full toolInputStr as-is for schematic tools
 
 		contentMsg := "\n"
 		if choice.Content != "" {
